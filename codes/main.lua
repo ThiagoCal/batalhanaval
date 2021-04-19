@@ -30,11 +30,11 @@ function love.draw()
 
 	local x0 = offset
 	local y0 = offset
-	drawboard(x0, y0, size, n)
+	drawboard(x0, y0, n, size)
 
 	x0 = offset
 	y0 = n * size + 2 * offset
-	drawboard(x0, y0, size, n)
+	drawboard(x0, y0, n, size)
 end
 
 
