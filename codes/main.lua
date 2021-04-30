@@ -11,8 +11,8 @@
 (OK) desenha navio
 (OK) desenha navio baseado em pos com cor
 
-=> listar todos os navios a serem posicionados
-=> pegar navios da lista e colocar no tabuleiro
+(OK) listar todos os navios a serem posicionados
+(OK) pegar navios da lista e colocar no tabuleiro
 
 => tabuleiro2 fica escondido do player1
 
@@ -27,6 +27,14 @@ local function drawchar(char, p)
 	love.graphics.print(char, p.x, p.y, 0, 2, 2, 4, 8)
 end
 
+local function copyquad(quad)
+	local t = {}
+	for i = 1, 4 do
+		t[i] = {x = quad[i].x, y = quad[i].y}
+	end
+	return t
+end
+
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
@@ -39,10 +47,28 @@ function ship.new(color, w, h, quad)
 		color = color,
 		w = w,
 		h = h,
+		original = {
+			w = w,
+			h = h,
+			quad = copyquad(quad),
+		},
 		quad = quad,
 	}
 	setmetatable(t, ship)
 	return t
+end
+
+function ship:rotate()
+	self.w, self.h = self.h, self.w
+	local newquad = copyquad(self.quad)
+	local w = self.quad[4].x - self.quad[1].x
+	local h = self.quad[2].y - self.quad[1].y
+	newquad[2].y = self.quad[1].y + w
+	newquad[3].y = newquad[2].y
+	newquad[4].y = self.quad[1].y
+	newquad[3].x = self.quad[1].x + h
+	newquad[4].x = newquad[3].x
+	self.quad = newquad
 end
 
 function ship:updatequad(x, y)
@@ -52,6 +78,12 @@ function ship:updatequad(x, y)
 		p.x = p.x + dx
 		p.y = p.y + dy
 	end
+end
+
+function ship:resetquad()
+	self.w = self.original.w
+	self.h = self.original.h
+	self.quad = copyquad(self.original.quad)
 end
 
 function ship:draw()
@@ -90,8 +122,8 @@ function board.new(x0, y0, m, n, size, coord)
 		n = n,
 		size = size,
 		coord = coord,
-		matrix = {},
-		ships = {},
+		matrix = {}, -- matriz de quads
+		ships = {matrix = {}},
 	}
 	setmetatable(t, board)
 
@@ -99,7 +131,11 @@ function board.new(x0, y0, m, n, size, coord)
 	local halfsize = size / 2
 	for i = 0, m - 1 do
 		t.matrix[i] = {}
+		t.ships.matrix[i] = {}
 		for j = 0, n - 1 do
+			if coord and (i == 0 or j == 0)  then
+				t.ships.matrix[i][j] = true
+			end
 			t.matrix[i][j] = {
 				{x = x, y = y},
 				{x = x, y = y + size},
@@ -148,15 +184,68 @@ function board:draw()
 	end
 end
 
+function board:contains(p)
+	local contains = p.x >= self.x0 and p.x <= self.xf and p.y >= self.y0 and p.y <= self.yf
+	if not contains then return false end
+	local px = p.x - self.x0
+	local py = p.y - self.y0
+	local i = math.floor(py / self.size)
+	local j = math.floor(px / self.size)
+	return true, i, j
+end
+
 function board:addship(i, j, color, w, h)
-	local ship = ship.new(color, w, h, {
-		self.matrix[i][j][1],
-		self.matrix[i + h - 1][j][2],
-		self.matrix[i + h - 1][j + w - 1][3],
-		self.matrix[i][j + w - 1][4],
-	})
+	local i0, iF = i, i + h - 1
+	local j0, jF = j, j + w - 1
+
+	-- checando se a posição para o navio é valida
+	for i = i0, iF do
+		for j = j0, jF do
+			if self.ships.matrix[i][j] ~= nil then
+				return nil
+			end
+		end
+	end
+
+	-- criando o navio
+	local ship = ship.new(color, w, h, copyquad({
+		self.matrix[i0][j0][1],
+		self.matrix[iF][j0][2],
+		self.matrix[iF][jF][3],
+		self.matrix[i0][jF][4],
+	}))
+
+	-- adicionando o navio na matriz de marcação de navios do tabuleiro
+	for i = i0, iF do
+		for j = j0, jF do
+			self.ships.matrix[i][j] = ship
+		end
+	end
+
+	-- adicionando o navio no vetor de navios do tabuleiro
 	table.insert(self.ships, ship)
+
 	return ship
+end
+
+function board:removeship(ship)
+	-- removendo o navio do vetor de navios do tabuleiro
+	local found
+	for i, v in ipairs(self.ships) do
+		if v == ship then
+			found = i
+		end
+	end
+	table.remove(self.ships, assert(found))
+
+	-- removendo o navio da matriz de marcação de navios do tabuleiro
+	for i = 0, self.m - 1 do
+		for j = 0, self.n - 1 do
+			if self.ships.matrix[i][j] == ship then
+				self.ships.matrix[i][j] = nil
+			end
+		end
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -167,12 +256,6 @@ function love.load()
 	love.window.setMode(600, 600)
 	love.graphics.setBackgroundColor(0.36, 0.57, 0.89)
 	love.graphics.setColor(newcolor(256, 256, 256))
-
-	unplaced = {
-		{1, 3},
-		{1, 2},
-		{1, 1},
-	}
 
 	local size = 38
 	local n = 6
@@ -193,12 +276,13 @@ function love.load()
 	y0 = 2 * offset + n * size
 	unplacedboard = board.new(x0, y0, 3, 3, size, false)
 
+	-- TODO: remover eventualmente os testes
 	-- adiciona peças aos tabuleiros
-	enemyships = {
+	enemyships = { -- teste
 		{2, 2, 3, 1, newcolor(200, 10, 10)},
 	}
 
-	playerships = {
+	playerships = { -- teste
 		{2, 2, 1, 3, newcolor(30, 30, 30)},
 	}
 
@@ -209,58 +293,54 @@ function love.load()
 	}
 
 	for i, t in ipairs(enemyships) do
-		enemyships[i] = enemyboard:addship(t[1], t[2], t[5], t[3], t[4])
+		enemyships[i] = assert(enemyboard:addship(t[1], t[2], t[5], t[3], t[4]))
 	end
 	for i, t in ipairs(playerships) do
-		playerships[i] = playerboard:addship(t[1], t[2], t[5], t[3], t[4])
+		playerships[i] = assert(playerboard:addship(t[1], t[2], t[5], t[3], t[4]))
 	end
 	for i, t in ipairs(unplacedships) do
-		unplacedships[i] = unplacedboard:addship(t[1], t[2], t[5], t[3], t[4])
+		unplacedships[i] = assert(unplacedboard:addship(t[1], t[2], t[5], t[3], t[4]))
 	end
 end
 
--- function love.mousereleased(x, y, button)
-
--- 	--make the dragging stop happening
--- 	for i,v in ipairs(ship1v) do
-
--- 		if button == "l"
--- 			then v.drag.active = false
--- 		end
-
--- 	end
--- end
-
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 --------------------------------------------------------------------------------
-
-local clicked = {p = {x = 10, y = 10}, char = "*"}
 
 local draggedship = nil
 
 function love.mousepressed(x, y)
 	local p = {x = x, y = y}
-	clicked.p = p
-
 	for _, ship in ipairs(unplacedships) do
 		if ship:contains(p) then
 			draggedship = ship
-			clicked.char = "+"
 		end
 	end
 end
 
 function love.mousereleased(x, y)
-	-- TODO
-	-- se o ponto que soltou está dentro do playerboard AND
-	--    o ponto que soltou é uma casa válida
-		-- remover o navio do unplacedboard (lógica)
-		-- colocar o navio no playerboard (lógica)
-	-- se não
-		-- volta com o návio para sua posição no unplacedboard
-	draggedship = nil
-	clicked.char = "*"
+	local p = {x = x, y = y}
+	if draggedship then
+		local contains, i, j = playerboard:contains(p)
+		if contains then
+			local color, w, h = draggedship.color, draggedship.w, draggedship.h
+			local placedship = playerboard:addship(i, j, color, w, h)
+			if placedship then
+				unplacedboard:removeship(draggedship)
+			else
+				draggedship:resetquad()
+			end
+		else
+			draggedship:resetquad()
+		end
+		draggedship = nil
+	end
+end
+
+function love.keypressed(key)
+	if key == "r" and draggedship then
+		draggedship:rotate()
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -268,7 +348,7 @@ end
 --------------------------------------------------------------------------------
 
 function love.update()
-	if draggedship ~= nil then
+	if draggedship then
 		local x0 = love.mouse.getX()
 		local y0 = love.mouse.getY()
 		draggedship:updatequad(x0, y0)
@@ -283,6 +363,4 @@ function love.draw()
 	enemyboard:draw()
 	playerboard:draw()
 	unplacedboard:draw()
-
-	drawchar(clicked.char, clicked.p)
 end
